@@ -82,6 +82,20 @@ async function orderList(request, user, env) {
   const found=await env.K17_DB.prepare(sql).bind(...args).all();
   return json({orders:found.results.map(o=>({...o,number:String(o.number).padStart(6,'0')}))});
 }
+async function deleteOrder(orderId,env) {
+  const order=await env.K17_DB.prepare('SELECT id,number FROM orders WHERE id=?').bind(orderId).first();
+  if(!order)throw err('El pedido ya no existe.',404);
+  const images=await env.K17_DB.prepare("SELECT image_key FROM items WHERE order_id=? AND image_key<>''").bind(orderId).all();
+  await env.K17_DB.batch([
+    env.K17_DB.prepare('DELETE FROM items WHERE order_id=?').bind(orderId),
+    env.K17_DB.prepare('DELETE FROM orders WHERE id=?').bind(orderId),
+  ]);
+  await Promise.all((images.results||[]).map(async row=>{
+    try { await driveCall(env,{action:'delete',id:row.image_key}) }
+    catch(error) { console.error(`K17: pedido #${order.number} eliminado, pero no se pudo borrar la foto ${row.image_key} de Drive:`,error?.message||String(error)) }
+  }));
+  return json({ok:true});
+}
 async function createOrder(request,user,env) {
   const b=await readBody(request),items=Array.isArray(b.items)?b.items:[];
   if(!b.customer?.trim()||!b.phone?.trim()||!b.address?.trim()||!PAYMENTS.has(b.payment)||items.length<1||items.length>30)throw err('Completa los datos requeridos y agrega al menos una prenda');
@@ -132,6 +146,8 @@ export async function onRequest(context) {
   if(request.method==='GET'&&path==='summary')return summary(user,env,url);
   if(request.method==='GET'&&path==='orders')return orderList(request,user,env);
   if(request.method==='POST'&&path==='orders'){requireRole(user,'worker');return createOrder(request,user,env)}
+  const orderPath=path.match(/^orders\/([0-9a-f-]{36})$/i);
+  if(request.method==='DELETE'&&orderPath){requireRole(user,'admin');return deleteOrder(orderPath[1],env)}
   if(path.startsWith('media/')){const key=path.slice('media/'.length);if(!/^[\w.-]{10,100}$/.test(key))throw err('Imagen no encontrada',404);const item=await env.K17_DB.prepare('SELECT i.image_key FROM items i JOIN orders o ON o.id=i.order_id WHERE i.image_key=? AND (?=\'admin\' OR o.worker_id=?)').bind(key,user.role,user.id).first();if(!item)throw err('Imagen no encontrada',404);const file=await driveCall(env,{action:'download',id:key});if(!/^image\/(png|jpeg|webp)$/.test(file.mime||''))throw err('Imagen no encontrada',404);const binary=atob(file.data),bytes=Uint8Array.from(binary,c=>c.charCodeAt(0)),h=new Headers({'content-type':file.mime,'cache-control':'private, no-store','x-content-type-options':'nosniff'});return new Response(bytes,{headers:h})}
   if(path==='workers'&&request.method==='GET'){requireRole(user,'admin');const rows=await env.K17_DB.prepare("SELECT * FROM users WHERE role='worker' ORDER BY name").all();return json({workers:rows.results.map(userPublic)})}
   if(path==='workers'&&request.method==='POST'){requireRole(user,'admin');const b=await readBody(request),commission=Number(b.commission??5);if(!b.name?.trim()||!/^\w{3,24}$/.test(b.username||'')||String(b.password||'').length<8||!Number.isFinite(commission)||commission<0||commission>100)throw err('Indica nombre, usuario, contraseña de al menos 8 caracteres y comisión entre 0 y 100 %');try{const r=await env.K17_DB.prepare("INSERT INTO users(name,username,pass_hash,role,commission) VALUES(?,?,?,'worker',?)").bind(b.name.trim().slice(0,120),b.username,await hashPassword(b.password),commission).run();return json({id:r.meta.last_row_id},201)}catch{throw err('Ese usuario ya existe',409)}}
