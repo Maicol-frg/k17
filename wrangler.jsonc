@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "k17",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-09-30",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "K17_DB",
+      "database_name": "k17-k17-db",
+      "database_id": "1cb861b0-3b16-46cc-bf58-24b357c8ac71"
+    }
+  ]
+}
